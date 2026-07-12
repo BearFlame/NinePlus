@@ -4,6 +4,8 @@ NineBot+ is a personal iOS app for viewing and managing Ninebot vehicle status, 
 
 This project is intended for personal builds. It is not configured for App Store distribution by default.
 
+> **Branch notice:** `main` is server-only and no longer includes the dual-mode connection path. Use the `nine-proxy` branch when dual-mode support is required.
+
 ## Features
 
 - Vehicle dashboard with battery, estimated range, status, charging state, and location.
@@ -18,7 +20,7 @@ This project is intended for personal builds. It is not configured for App Store
 - macOS with Xcode.
 - An Apple Developer account for device signing.
 - A configured iOS device.
-- A compatible vehicle API proxy endpoint reachable from the iPhone.
+- A reachable NinePlus Platform server.
 
 ## Build
 
@@ -35,7 +37,7 @@ This project is intended for personal builds. It is not configured for App Store
 
 1. Open the app on the iPhone.
 2. Go to the profile/settings tab.
-3. Enter your proxy endpoint and optional Bearer Token.
+3. Enter your NinePlus server address and optional App Bearer Token.
 4. Bind your account.
 5. Return to the vehicle dashboard and refresh.
 6. Add the Home Screen or Lock Screen widgets after the first successful refresh.
