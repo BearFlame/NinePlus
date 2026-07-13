@@ -43,26 +43,6 @@ struct NinebotServerClient {
         return Self.loginResult(from: payload)
     }
 
-    func sendLoginCode(account: String) async throws {
-        _ = try await request(
-            method: "POST",
-            path: ["accounts", "login-code"],
-            body: ["account": account]
-        )
-    }
-
-    func consumeLoginCode(account: String, code: String) async throws -> NinebotLoginResult {
-        let payload = try await request(
-            method: "POST",
-            path: ["accounts", "login-code", "consume"],
-            body: [
-                "account": account,
-                "code": code,
-            ]
-        )
-        return Self.loginResult(from: payload)
-    }
-
     func ringBell(sn: String) async throws -> JSONValue {
         try await request(method: "POST", path: ["vehicles", sn, "bell"])
     }
@@ -105,10 +85,48 @@ struct NinebotServerClient {
 
         var snapshots: [NinebotVehicleSnapshot] = []
         for vehicle in vehicles {
-            let status = try? await request(method: "GET", path: ["vehicles", vehicle.sn, "status"])
-            let travel = try? await fetchTravel(sn: vehicle.sn, month: currentMonth)
-            let battery = try? await request(method: "GET", path: ["vehicles", vehicle.sn, "battery"])
-            let prediction = try? await fetchPrediction(sn: vehicle.sn)
+            let dashboard: JSONValue?
+            do {
+                dashboard = try await request(method: "GET", path: ["vehicles", vehicle.sn, "dashboard"])
+            } catch {
+                dashboard = nil
+            }
+            let dashboardObject = dashboard?.objectValue
+            let status: JSONValue?
+            let travel: JSONValue?
+            let battery: JSONValue?
+            let prediction: NinebotServerPrediction?
+            let stableState = dashboardObject?["state"]
+            if let stableState, Self.hasVehicleStatus(stableState) {
+                status = stableState
+                travel = dashboardObject?["travel"]
+                battery = Self.hasBatteryData(dashboardObject?["battery"])
+                    ? dashboardObject?["battery"]
+                    : stableState
+                prediction = dashboardObject?["prediction"].flatMap(Self.serverPrediction)
+            } else if let dashboardObject,
+               Self.hasVehicleStatus(dashboardObject["status"]),
+               Self.hasBatteryData(dashboardObject["battery"]) {
+                status = dashboardObject["status"]
+                travel = dashboardObject["travel"]
+                battery = dashboardObject["battery"]
+                prediction = dashboardObject["prediction"].flatMap(Self.serverPrediction)
+            } else {
+                // Status and battery are the authoritative snapshot.  Never turn a
+                // failed request into an empty, apparently successful dashboard.
+                let fallbackStatus = try await request(method: "GET", path: ["vehicles", vehicle.sn, "status"])
+                let fallbackBattery = try await request(method: "GET", path: ["vehicles", vehicle.sn, "battery"])
+                guard Self.hasVehicleStatus(fallbackStatus) else {
+                    throw NinebotServerError.server("服务器没有返回车辆状态，请在管理端检查该车辆最近一次轮询")
+                }
+                guard Self.hasBatteryData(fallbackBattery) else {
+                    throw NinebotServerError.server("服务器没有返回电池数据，请在管理端检查该车辆最近一次轮询")
+                }
+                status = fallbackStatus
+                travel = try? await fetchTravel(sn: vehicle.sn, month: currentMonth)
+                battery = fallbackBattery
+                prediction = try? await fetchPrediction(sn: vehicle.sn)
+            }
             let monthlyTravels = await fetchMonthlyTravels(
                 sn: vehicle.sn,
                 authDate: vehicle.authDate,
@@ -120,12 +138,13 @@ struct NinebotServerClient {
                 travel: travel,
                 battery: battery,
                 prediction: prediction,
-                updatedAt: Date()
+                updatedAt: Self.serverDateValue(dashboardObject?["updated_at"] ?? dashboardObject?["updatedAt"]) ?? Date()
             )
             if let totalMileage = Self.totalMileage(fromMonthlyTravels: monthlyTravels) {
                 state.totalMileage = totalMileage
             }
-            let resolvedVehicle = Self.vehicleInfo(vehicle, addingImageFrom: status, battery: battery)
+            let dashboardVehicle = dashboardObject?["vehicle"].flatMap(Self.vehicleInfo) ?? vehicle
+            let resolvedVehicle = Self.vehicleInfo(dashboardVehicle, addingImageFrom: status, battery: battery)
             snapshots.append(NinebotVehicleSnapshot(vehicle: resolvedVehicle, state: state))
         }
 
@@ -379,6 +398,26 @@ private extension NinebotServerClient {
         return []
     }
 
+    static func hasVehicleStatus(_ value: JSONValue?) -> Bool {
+        let root = value?.objectValue ?? [:]
+        let object = payloadObject(root, preferredKeys: ["status", "vehicle_status", "vehicleStatus", "data"])
+        guard !object.isEmpty else { return false }
+        return firstDouble(
+            ["dump_energy", "dumpEnergy", "precise_estimate_mileage", "preciseEstimateMileage", "estimate_mileage", "estimateMileage", "pwr", "charging", "lock_status", "lockStatus"],
+            in: [object, root]
+        ) != nil || firstObject(["loc", "locationInfo"], in: object) != nil
+    }
+
+    static func hasBatteryData(_ value: JSONValue?) -> Bool {
+        let root = value?.objectValue ?? [:]
+        let object = payloadObject(root, preferredKeys: ["battery", "batteryInfo", "battery_info", "data"])
+        guard !object.isEmpty else { return false }
+        return firstDouble(
+            ["electricity", "dump_energy", "dumpEnergy", "battery_voltage", "batteryVoltage", "bms_volt", "bmsVolt", "bat_temp", "batt_temp", "charging_power", "chargingPower"],
+            in: [object, root]
+        ) != nil || firstArrayObject(["battery_list", "batteryList", "batteries"], in: object) != nil
+    }
+
     static func vehicleInfo(from value: JSONValue) -> NinebotVehicleInfo? {
         guard let object = value.objectValue else { return nil }
         guard let sn = firstString(["wnumber", "sn"], in: object), !sn.isEmpty else {
@@ -404,14 +443,14 @@ private extension NinebotServerClient {
             return vehicle
         }
 
-        let statusObject = status?.objectValue ?? [:]
-        let batteryObject = battery?.objectValue ?? [:]
+        let statusRoot = status?.objectValue ?? [:]
+        let batteryRoot = battery?.objectValue ?? [:]
+        let statusObject = payloadObject(statusRoot, preferredKeys: ["status", "vehicle_status", "vehicleStatus", "data"])
+        let statusVehicleObject = firstObject(["vehicle", "vehicleInfo", "vehicle_info"], in: statusRoot) ?? [:]
+        let batteryObject = payloadObject(batteryRoot, preferredKeys: ["battery", "batteryInfo", "battery_info", "data"])
         guard let imageURLString = firstString(
             ["v6_light_img_url", "v6LightImgUrl", "img_url", "imgUrl", "img", "image_url", "imageUrl"],
-            in: statusObject
-        ) ?? firstString(
-            ["v6_light_img_url", "v6LightImgUrl", "img_url", "imgUrl", "img", "image_url", "imageUrl"],
-            in: batteryObject
+            in: [statusObject, statusVehicleObject, statusRoot, batteryObject, batteryRoot]
         ) else {
             return vehicle
         }
@@ -512,16 +551,25 @@ private extension NinebotServerClient {
         prediction: NinebotServerPrediction? = nil,
         updatedAt: Date
     ) -> NinebotVehicleState {
-        let statusObject = status?.objectValue ?? [:]
+        let statusRoot = status?.objectValue ?? [:]
+        let statusObject = payloadObject(statusRoot, preferredKeys: ["status", "vehicle_status", "vehicleStatus", "data"])
         let travelObject = travel?.objectValue ?? [:]
-        let batteryPayloadObject = battery?.objectValue ?? [:]
-        let batteryObject = firstObject(["battery", "batteryInfo", "battery_info", "bms", "bmsInfo", "bms_info"], in: statusObject) ?? [:]
-        let batteryListObject = firstArrayObject(["battery_list", "batteryList", "batteries"], in: batteryPayloadObject) ?? [:]
-        let batteryMainObject = firstObject(["battery_main", "batteryMain"], in: batteryPayloadObject) ?? [:]
-        let batterySources = [statusObject, batteryObject, batteryPayloadObject, batteryListObject, batteryMainObject]
-        let loc = statusObject["loc"]?.objectValue
-        let locationInfo = statusObject["locationInfo"]?.objectValue
-        let lockNumber = loc?["lock"]?.intValue ?? statusObject["lock_status"]?.intValue
+        let batteryRoot = battery?.objectValue ?? [:]
+        let batteryPayloadObject = payloadObject(batteryRoot, preferredKeys: ["battery", "batteryInfo", "battery_info", "data"])
+        let statusBatteryObject = firstObject(["battery", "batteryInfo", "battery_info", "bms", "bmsInfo", "bms_info"], in: statusObject)
+            ?? firstObject(["battery", "batteryInfo", "battery_info", "bms", "bmsInfo", "bms_info"], in: statusRoot)
+            ?? [:]
+        let batteryListObject = firstArrayObject(["battery_list", "batteryList", "batteries"], in: batteryPayloadObject)
+            ?? firstArrayObject(["battery_list", "batteryList", "batteries"], in: batteryRoot)
+            ?? [:]
+        let batteryMainObject = firstObject(["battery_main", "batteryMain"], in: batteryPayloadObject)
+            ?? firstObject(["battery_main", "batteryMain"], in: batteryRoot)
+            ?? [:]
+        let statusSources = [statusObject, statusRoot]
+        let batterySources = statusSources + [statusBatteryObject, batteryPayloadObject, batteryRoot, batteryListObject, batteryMainObject]
+        let loc = statusObject["loc"]?.objectValue ?? statusRoot["loc"]?.objectValue
+        let locationInfo = statusObject["locationInfo"]?.objectValue ?? statusRoot["locationInfo"]?.objectValue
+        let lockNumber = loc?["lock"]?.intValue ?? firstInt(["lock_status", "lockStatus"], in: statusSources)
         let rides = travelObject["list"]?.arrayValue ?? []
         let rideRecords = rides.enumerated().compactMap { index, value in
             rideRecord(from: value, index: index)
@@ -530,9 +578,7 @@ private extension NinebotServerClient {
         let dailyMileageRecords = dailyMileageRecords(from: travelObject)
 
         return NinebotVehicleState(
-            battery: firstInt(["dump_energy", "dumpEnergy"], in: statusObject)
-                ?? firstInt(["electricity", "dump_energy", "dumpEnergy"], in: batteryPayloadObject)
-                ?? firstInt(["electricity", "dump_energy", "dumpEnergy"], in: batteryListObject),
+            battery: firstInt(["dump_energy", "dumpEnergy", "electricity", "battery_percent", "batteryPercent"], in: batterySources),
             batteryVoltage: normalizedBatteryVoltage(
                 firstDouble(
                     [
@@ -581,17 +627,14 @@ private extension NinebotServerClient {
                     in: batterySources
                 )
             ),
-            batteryCycleCount: firstInt(["bms_cycle", "bmsCycle", "cycle", "cycles"], in: batteryListObject)
-                ?? firstInt(["bms_cycle", "bmsCycle", "cycle", "cycles"], in: batteryPayloadObject),
-            chargingPower: firstDouble(["charging_power", "chargingPower", "charge_power", "chargePower"], in: batteryPayloadObject),
-            endurance: firstDouble(["precise_estimate_mileage", "preciseEstimateMileage", "estimate_mileage", "estimateMileage"], in: statusObject),
-            aiEstimatedMileage: firstDouble(["ai_estimate_mileage", "aiEstimateMileage", "ai_estimated_mileage", "aiEstimatedMileage"], in: statusObject),
-            isCharging: firstBoolLike(["charging", "chargingState"], in: statusObject, trueValue: 1)
-                ?? firstBoolLike(["charging", "chargingState"], in: batteryPayloadObject, trueValue: 1),
-            isPoweredOn: firstBoolLike(["pwr", "powerStatus"], in: statusObject, trueValue: 1),
+            batteryCycleCount: firstInt(["bms_cycle", "bmsCycle", "cycle", "cycles"], in: batterySources),
+            chargingPower: firstDouble(["charging_power", "chargingPower", "charge_power", "chargePower"], in: batterySources),
+            endurance: firstDouble(["estimate_mileage", "estimateMileage", "precise_estimate_mileage", "preciseEstimateMileage"], in: statusSources),
+            aiEstimatedMileage: firstDouble(["ai_estimate_mileage", "aiEstimateMileage", "ai_estimated_mileage", "aiEstimatedMileage"], in: statusSources),
+            isCharging: firstBoolLike(["charging", "chargingState"], in: batterySources, trueValue: 1),
+            isPoweredOn: firstBoolLike(["pwr", "powerStatus"], in: statusSources, trueValue: 1),
             isLocked: lockNumber.map { $0 == 1 },
-            remainingChargeTime: firstDouble(["remain_charge_time", "remainChargeTime", "remainingChargeTime"], in: statusObject)
-                ?? firstDouble(["remain_charge_time", "remainChargeTime", "remainingChargeTime"], in: batteryPayloadObject),
+            remainingChargeTime: firstDouble(["remain_charge_time", "remainChargeTime", "remainingChargeTime"], in: batterySources),
             locationDescription: firstString(["locationDesc", "desc"], in: locationInfo ?? [:]),
             latitude: normalizedCoordinate(
                 loc?["lat"]?.doubleValue ?? locationInfo?["lat"]?.doubleValue,
@@ -601,7 +644,7 @@ private extension NinebotServerClient {
                 loc?["lon"]?.doubleValue ?? locationInfo?["lon"]?.doubleValue,
                 limit: 180
             ),
-            totalMileage: firstDouble(["total_mileage", "totalMileage", "total_mileages"], in: statusObject)
+            totalMileage: firstDouble(["total_mileage", "totalMileage", "total_mileages"], in: statusSources)
                 ?? firstDouble(["total_mileage", "totalMileage"], in: travelObject),
             monthMileage: firstDouble(["total_mileages", "monthMileage"], in: travelObject),
             monthEnergy: firstDouble(["ec", "monthEnergy"], in: travelObject),
@@ -612,9 +655,9 @@ private extension NinebotServerClient {
             rideRecords: rideRecords.isEmpty ? nil : rideRecords,
             dailyMileageRecords: dailyMileageRecords.isEmpty ? nil : dailyMileageRecords,
             updatedAt: updatedAt,
-            rawStatus: statusObject.isEmpty ? nil : statusObject,
+            rawStatus: statusRoot.isEmpty ? nil : statusRoot,
             rawTravel: travelObject.isEmpty ? nil : travelObject,
-            rawBattery: batteryPayloadObject.isEmpty ? nil : batteryPayloadObject,
+            rawBattery: batteryRoot.isEmpty ? nil : batteryRoot,
             serverPrediction: prediction
         )
     }
@@ -717,6 +760,15 @@ private extension NinebotServerClient {
         return nil
     }
 
+    static func firstInt(_ keys: [String], in objects: [[String: JSONValue]]) -> Int? {
+        for object in objects {
+            if let value = firstInt(keys, in: object) {
+                return value
+            }
+        }
+        return nil
+    }
+
     static func firstDouble(_ keys: [String], in object: [String: JSONValue]) -> Double? {
         for key in keys {
             if let value = object[key]?.doubleValue {
@@ -742,6 +794,26 @@ private extension NinebotServerClient {
             }
         }
         return nil
+    }
+
+    static func firstString(_ keys: [String], in objects: [[String: JSONValue]]) -> String? {
+        for object in objects {
+            if let value = firstString(keys, in: object) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    static func payloadObject(_ root: [String: JSONValue], preferredKeys: [String]) -> [String: JSONValue] {
+        var current = root
+        for _ in 0..<2 {
+            guard let nested = firstObject(preferredKeys, in: current), !nested.isEmpty else {
+                break
+            }
+            current = nested
+        }
+        return current
     }
 
     static func firstObject(_ keys: [String], in object: [String: JSONValue]) -> [String: JSONValue]? {
@@ -825,6 +897,15 @@ private extension NinebotServerClient {
     static func firstBoolLike(_ keys: [String], in object: [String: JSONValue], trueValue: Int) -> Bool? {
         for key in keys {
             if let value = boolLike(object[key], trueValue: trueValue) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    static func firstBoolLike(_ keys: [String], in objects: [[String: JSONValue]], trueValue: Int) -> Bool? {
+        for object in objects {
+            if let value = firstBoolLike(keys, in: object, trueValue: trueValue) {
                 return value
             }
         }

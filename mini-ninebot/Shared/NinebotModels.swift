@@ -1037,9 +1037,6 @@ struct NinebotVehicleState: Codable, Equatable {
         if let endurance {
             return max(endurance, 0)
         }
-        if let aiEstimatedMileage {
-            return max(aiEstimatedMileage, 0)
-        }
         return nil
     }
 
@@ -1201,9 +1198,6 @@ struct NinebotVehicleState: Codable, Equatable {
            serverKmPerPercent > 0 {
             return serverKmPerPercent
         }
-        if let defaultObservedKmPerBatteryPercent {
-            return defaultObservedKmPerBatteryPercent
-        }
         guard let battery, battery > 0, let endurance else { return nil }
         return max(endurance, 0) / Double(battery)
     }
@@ -1219,40 +1213,22 @@ struct NinebotVehicleState: Codable, Equatable {
            serverKmPerPercent > 0 {
             return serverKmPerPercent
         }
-        return defaultObservedKmPerBatteryPercent
+        return nil
     }
 
     var observedRangeSampleCount: Int {
-        if usesServerAlgorithmEstimate,
-           let serverCount = serverPrediction?.range.sampleCount,
+        if let serverCount = serverPrediction?.range.sampleCount,
            serverCount > 0 {
             return serverCount
         }
-        return observedRangeSamples.count
+        return 0
     }
 
     var rangeEstimateAccuracy: Double? {
-        if usesServerAlgorithmEstimate,
-           let serverAccuracy = serverPrediction?.range.accuracyPercent {
+        if let serverAccuracy = serverPrediction?.range.accuracyPercent {
             return min(max(serverAccuracy / 100, 0), 1)
         }
-        let ratios = observedRangeRatios
-        guard !ratios.isEmpty else { return nil }
-
-        let consistencyScore = observedRangeConsistencyScore ?? 0.55
-
-        let sampleScore = min(Double(ratios.count) / 10, 1)
-        let comparisonScore: Double
-        if let observedEstimatedMileage, let interfaceEstimatedMileage {
-            let denominator = max(max(observedEstimatedMileage, interfaceEstimatedMileage), 1)
-            let delta = abs(observedEstimatedMileage - interfaceEstimatedMileage) / denominator
-            comparisonScore = max(0, 1 - min(delta, 0.7) / 0.7)
-        } else {
-            comparisonScore = 0.7
-        }
-
-        let score = 0.35 + sampleScore * 0.35 + consistencyScore * 0.2 + comparisonScore * 0.1
-        return min(max(score, 0.35), 0.96)
+        return nil
     }
 
     var rangeEstimateAccuracyText: String {
@@ -1261,8 +1237,7 @@ struct NinebotVehicleState: Codable, Equatable {
     }
 
     var rangeEstimateAccuracyDetailText: String {
-        if usesServerAlgorithmEstimate,
-           let serverCount = serverPrediction?.range.sampleCount,
+        if let serverCount = serverPrediction?.range.sampleCount,
            serverCount > 0 {
             if serverPrediction?.range.accuracySource == "measured" {
                 let verifiedCount = serverPrediction?.range.measuredSampleCount ?? serverCount
@@ -1270,8 +1245,7 @@ struct NinebotVehicleState: Codable, Equatable {
             }
             return "算法服务端 · \(serverCount) 次有效行程"
         }
-        guard observedRangeSampleCount > 0 else { return "等待有效行程样本" }
-        return "默认算法 · \(observedRangeSampleCount) 次有效行程"
+        return serverPrediction == nil ? "服务端未返回算法指标" : "服务端样本不足"
     }
 
     var rangeModelSummaryText: String {
@@ -1281,38 +1255,26 @@ struct NinebotVehicleState: Codable, Equatable {
 
     var rangeModelInsightText: String {
         if usesServerAlgorithmEstimate {
+            if serverPrediction?.range.source == "default" {
+                return "服务端样本不足，当前使用默认算法估算。"
+            }
             if let accuracy = rangeEstimateAccuracy, accuracy >= 0.82 {
                 return "服务端近期样本稳定，估算可信。"
             }
             return "服务端已根据近期行程持续校准。"
         }
         if serverPrediction != nil {
-            return "服务端样本不足，当前使用默认算法估算。"
+            return "服务端未给出可用算法续航，当前显示官方预估。"
         }
-        guard observedRangeSampleCount > 0 else { return "刷新更多行程后生成默认算法估算。" }
-        if let rangeEstimateAccuracy, rangeEstimateAccuracy >= 0.82 {
-            return "近期样本稳定，估算可信。"
-        }
-        if observedRangeSampleCount < 5 {
-            return "样本偏少，后续行程会继续校准。"
-        }
-        return "样本波动较大，已降低默认算法权重。"
+        return "服务端未返回算法预测，当前显示官方预估。"
     }
 
     var localEstimatedMileage: Double? {
-        if usesServerAlgorithmEstimate,
-           let serverEstimatedMileage = serverPrediction?.range.estimatedRange,
+        if let serverEstimatedMileage = serverPrediction?.range.estimatedRange,
            serverEstimatedMileage >= 0 {
             return serverEstimatedMileage
         }
-        if let interfaceEstimatedMileage, let defaultObservedEstimatedMileage {
-            let weight = observedRangeBlendWeight ?? 0.18
-            return max(interfaceEstimatedMileage + (defaultObservedEstimatedMileage - interfaceEstimatedMileage) * weight, 0)
-        }
-        if let defaultObservedEstimatedMileage {
-            return max(defaultObservedEstimatedMileage, 0)
-        }
-        return interfaceEstimatedMileage
+        return officialEstimatedMileage
     }
 
     var localEstimatedMileageText: String {
@@ -1325,11 +1287,11 @@ struct NinebotVehicleState: Codable, Equatable {
     }
 
     var predictionModelTitle: String {
-        "算法预估"
+        usesServerAlgorithmEstimate ? "算法预估" : "官方预估"
     }
 
     var isUsingDefaultAlgorithmFallback: Bool {
-        serverPrediction != nil && !usesServerAlgorithmEstimate
+        serverPrediction?.range.isReady == false
     }
 
     var remainingChargeTimeSourceTitle: String {
@@ -1339,30 +1301,18 @@ struct NinebotVehicleState: Codable, Equatable {
     }
 
     var localEstimateBasisText: String {
-        if usesServerAlgorithmEstimate, let prediction = serverPrediction {
+        if let prediction = serverPrediction,
+           let estimatedRange = prediction.range.estimatedRange,
+           estimatedRange >= 0 {
             let sampleText = prediction.range.sampleCount.map { "\($0) 次有效行程" } ?? "历史样本"
             switch prediction.range.source ?? "" {
             case "personalized", "personalized_blend":
                 return "算法服务端结合官方预估和 \(sampleText) 持续校准。"
-            case "official_fallback":
-                return "服务端当前采用官方预估。"
             default:
-                return "服务端正在根据 \(sampleText) 学习续航。"
+                return "服务端默认算法基于 \(sampleText) 计算。"
             }
         }
-        if serverPrediction != nil {
-            return "服务端样本不足，当前使用默认算法估算。"
-        }
-        if let observedKmPerBatteryPercent, interfaceEstimatedMileage != nil {
-            return "结合官方预估和 \(observedRangeSampleCount) 次近期行程，约 \(Self.numberText(observedKmPerBatteryPercent, maximumFractionDigits: 2)) km/%。"
-        }
-        if let observedKmPerBatteryPercent {
-            return "按 \(observedRangeSampleCount) 次近期行程估算，约 \(Self.numberText(observedKmPerBatteryPercent, maximumFractionDigits: 2)) km/%。"
-        }
-        if rangePerBatteryPercent != nil {
-            return "按官方预估计算。"
-        }
-        return "刷新更多行程后生成估算。"
+        return "服务端未返回算法预测，当前显示官方预估。"
     }
 
     var monthEnergyPerKm: Double? {
@@ -1595,8 +1545,7 @@ struct NinebotVehicleState: Codable, Equatable {
     }
 
     private var usesServerAlgorithmEstimate: Bool {
-        guard serverPrediction?.range.isReady == true,
-              let estimatedRange = serverPrediction?.range.estimatedRange,
+        guard let estimatedRange = serverPrediction?.range.estimatedRange,
               estimatedRange >= 0 else {
             return false
         }

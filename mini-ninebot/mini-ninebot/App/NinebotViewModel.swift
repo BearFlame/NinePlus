@@ -8,7 +8,6 @@ enum NinebotInputError: LocalizedError {
     case missingServer
     case missingAccount
     case missingPassword
-    case missingCode
 
     var errorDescription: String? {
         switch self {
@@ -18,8 +17,6 @@ enum NinebotInputError: LocalizedError {
             return "请填写手机号"
         case .missingPassword:
             return "请填写密码"
-        case .missingCode:
-            return "请填写验证码"
         }
     }
 }
@@ -133,7 +130,6 @@ final class NinebotViewModel: ObservableObject {
     @Published var bearerToken = ""
     @Published var account = ""
     @Published var password = ""
-    @Published var smsCode = ""
     @Published var pushDeviceToken: String?
     @Published var loginResult: NinebotLoginResult?
     @Published var dashboard: NinebotDashboard
@@ -356,40 +352,6 @@ final class NinebotViewModel: ObservableObject {
             let result = try await client.login(account: account.trimmed, password: password)
             rememberLoginResult(result, fallbackAccount: account.trimmed)
             password = ""
-            await self.syncPushDeviceTokenIfPossible()
-
-            let dashboard = try await makeClient().fetchDashboard(selectedSN: self.dashboard.selectedSN)
-            let archivedDashboard = self.saveDashboard(dashboard)
-            await self.cacheVehicleImages(for: archivedDashboard)
-            await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
-            self.errorMessage = nil
-            self.statusMessage = "登录成功"
-            WidgetCenter.shared.reloadAllTimelines()
-        }
-    }
-
-    func sendSMSCode() async {
-        await runLoadingOperation(message: "正在发送验证码") {
-            guard !account.trimmed.isEmpty else { throw NinebotInputError.missingAccount }
-
-            saveConfiguration()
-            let client = try makeClient()
-            try await client.sendLoginCode(account: account.trimmed)
-            self.errorMessage = nil
-            self.statusMessage = "验证码已发送"
-        }
-    }
-
-    func consumeSMSCode() async {
-        await runLoadingOperation(message: "正在验证码登录") {
-            guard !account.trimmed.isEmpty else { throw NinebotInputError.missingAccount }
-            guard !smsCode.trimmed.isEmpty else { throw NinebotInputError.missingCode }
-
-            saveConfiguration()
-            let client = try makeClient()
-            let result = try await client.consumeLoginCode(account: account.trimmed, code: smsCode.trimmed)
-            rememberLoginResult(result, fallbackAccount: account.trimmed)
-            smsCode = ""
             await self.syncPushDeviceTokenIfPossible()
 
             let dashboard = try await makeClient().fetchDashboard(selectedSN: self.dashboard.selectedSN)

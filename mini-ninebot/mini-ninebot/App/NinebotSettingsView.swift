@@ -4,7 +4,6 @@ import UIKit
 struct NinebotSettingsView: View {
     @ObservedObject var model: NinebotViewModel
     @Environment(\.openURL) private var openURL
-    @State private var loginMode: LoginMode = .sms
     @State private var isShowingConnectionSettings = false
 
     var body: some View {
@@ -12,10 +11,7 @@ struct NinebotSettingsView: View {
             if model.hasLoginAccount {
                 settingsContent
             } else {
-                NinebotLoginPage(
-                    model: model,
-                    loginMode: $loginMode
-                )
+                NinebotLoginPage(model: model)
             }
         }
     }
@@ -209,19 +205,15 @@ struct NinebotSettingsView: View {
 
 private enum LoginFocusField: Hashable {
     case phone
-    case code
     case password
 }
 
 private struct NinebotLoginPage: View {
     @ObservedObject var model: NinebotViewModel
-    @Binding var loginMode: LoginMode
     @FocusState private var focusedField: LoginFocusField?
     @State private var isShowingConnectionSheet = false
     @State private var isAgreementAccepted = false
     @State private var isPasswordVisible = false
-    @State private var codeCooldown = 0
-    @State private var countdownTask: Task<Void, Never>?
     @State private var toastMessage: String?
     @State private var keyboardHeight: CGFloat = 0
 
@@ -236,8 +228,6 @@ private struct NinebotLoginPage: View {
                         LoginHeroVisual()
 
                         VStack(spacing: 18) {
-                            LoginSegmentedTabs(selection: $loginMode)
-
                             VStack(spacing: 12) {
                                 LoginInputRow(
                                     placeholder: "请输入手机号",
@@ -250,9 +240,8 @@ private struct NinebotLoginPage: View {
                                 )
                                 .id(LoginFocusField.phone)
 
-                                loginSpecificInput
+                                passwordInput
                             }
-                            .animation(.easeInOut(duration: 0.22), value: loginMode)
 
                             LoginAgreementRow(isAccepted: $isAgreementAccepted)
 
@@ -325,9 +314,6 @@ private struct NinebotLoginPage: View {
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
         }
-        .onDisappear {
-            countdownTask?.cancel()
-        }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
             updateKeyboardHeight(from: notification)
         }
@@ -339,51 +325,26 @@ private struct NinebotLoginPage: View {
     }
 
     @ViewBuilder
-    private var loginSpecificInput: some View {
-        if loginMode == .sms {
-            LoginInputRow(
-                placeholder: "请输入验证码",
-                systemImage: "shield.checkered",
-                text: $model.smsCode,
-                focusedField: $focusedField,
-                field: .code,
-                keyboardType: .numberPad,
-                textContentType: .oneTimeCode
-            ) {
-                Button {
-                    sendCode()
-                } label: {
-                    Text(codeButtonText)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(canRequestCode ? Color.loginAccent : Color.loginMuted)
-                        .frame(minWidth: 86, alignment: .trailing)
-                }
-                .disabled(!canRequestCode || model.isLoading)
+    private var passwordInput: some View {
+        LoginInputRow(
+            placeholder: "请输入密码",
+            systemImage: "lock.fill",
+            text: $model.password,
+            focusedField: $focusedField,
+            field: .password,
+            isSecure: !isPasswordVisible,
+            textContentType: .password
+        ) {
+            Button {
+                isPasswordVisible.toggle()
+            } label: {
+                Image(systemName: isPasswordVisible ? "eye.slash.fill" : "eye.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.loginMuted)
+                    .frame(width: 30)
             }
-            .id(LoginFocusField.code)
-            .transition(.opacity.combined(with: .move(edge: .trailing)))
-        } else {
-            LoginInputRow(
-                placeholder: "请输入密码",
-                systemImage: "lock.fill",
-                text: $model.password,
-                focusedField: $focusedField,
-                field: .password,
-                isSecure: !isPasswordVisible,
-                textContentType: .password
-            ) {
-                Button {
-                    isPasswordVisible.toggle()
-                } label: {
-                    Image(systemName: isPasswordVisible ? "eye.slash.fill" : "eye.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.loginMuted)
-                        .frame(width: 30)
-                }
-            }
-            .id(LoginFocusField.password)
-            .transition(.opacity.combined(with: .move(edge: .leading)))
         }
+        .id(LoginFocusField.password)
     }
 
     private var loginBackground: some View {
@@ -405,53 +366,12 @@ private struct NinebotLoginPage: View {
         phoneDigits.count == 11 && phoneDigits.first == "1"
     }
 
-    private var isCodeValid: Bool {
-        let code = model.smsCode.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (4...8).contains(code.count) && code.allSatisfy(\.isNumber)
-    }
-
     private var isPasswordValid: Bool {
         model.password.count >= 6
     }
 
-    private var canRequestCode: Bool {
-        isPhoneValid && codeCooldown == 0
-    }
-
     private var canSubmit: Bool {
-        guard isAgreementAccepted, isPhoneValid else { return false }
-        switch loginMode {
-        case .sms:
-            return isCodeValid
-        case .password:
-            return isPasswordValid
-        }
-    }
-
-    private var codeButtonText: String {
-        codeCooldown > 0 ? "\(codeCooldown)s 后重新获取" : "获取验证码"
-    }
-
-    private func sendCode() {
-        guard model.hasConfiguration else {
-            showToast("请先设置连接地址")
-            isShowingConnectionSheet = true
-            return
-        }
-        guard isPhoneValid else {
-            showToast("请输入正确的手机号")
-            focusedField = .phone
-            return
-        }
-        Task {
-            await model.sendSMSCode()
-            if let error = model.errorMessage {
-                showToast(error)
-            } else {
-                showToast("验证码已发送")
-                startCountdown()
-            }
-        }
+        isAgreementAccepted && isPhoneValid && isPasswordValid
     }
 
     private func submitLogin() {
@@ -469,44 +389,18 @@ private struct NinebotLoginPage: View {
             showToast("请先勾选用户协议")
             return
         }
-        switch loginMode {
-        case .sms:
-            guard isCodeValid else {
-                showToast("请输入正确的验证码")
-                focusedField = .code
-                return
-            }
-        case .password:
-            guard isPasswordValid else {
-                showToast("密码至少 6 位")
-                focusedField = .password
-                return
-            }
+        guard isPasswordValid else {
+            showToast("密码至少 6 位")
+            focusedField = .password
+            return
         }
 
         Task {
-            switch loginMode {
-            case .sms:
-                await model.consumeSMSCode()
-            case .password:
-                await model.loginWithPassword()
-            }
+            await model.loginWithPassword()
             if let error = model.errorMessage {
                 showToast(error)
             } else {
                 showToast("登录成功")
-            }
-        }
-    }
-
-    private func startCountdown() {
-        countdownTask?.cancel()
-        codeCooldown = 60
-        countdownTask = Task { @MainActor in
-            while codeCooldown > 0 {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                if Task.isCancelled { return }
-                codeCooldown -= 1
             }
         }
     }
@@ -676,36 +570,6 @@ private struct NinePlusLoginLogo: View {
     }
 }
 
-private struct LoginSegmentedTabs: View {
-    @Binding var selection: LoginMode
-
-    var body: some View {
-        HStack(spacing: 8) {
-            ForEach([LoginMode.sms, LoginMode.password]) { mode in
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        selection = mode
-                    }
-                } label: {
-                    Label(mode.fullTitle, systemImage: mode.systemImage)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
-                        .foregroundStyle(selection == mode ? Color.white : Color.loginMuted)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(selection == mode ? Color.loginInk : Color.loginSoftControl)
-                        .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(5)
-        .background(Color.loginSoftControl)
-        .clipShape(Capsule())
-    }
-}
-
 private struct LoginInputRow<Trailing: View>: View {
     var placeholder: String
     var systemImage: String
@@ -855,182 +719,6 @@ private extension Color {
     static let loginCard = Color.white.opacity(0.96)
     static let loginField = Color(red: 0.975, green: 0.98, blue: 0.99)
     static let loginBorder = Color(red: 0.84, green: 0.86, blue: 0.90)
-}
-
-private struct AccountBindingPanel: View {
-    @ObservedObject var model: NinebotViewModel
-    @Binding var loginMode: LoginMode
-    @Binding var isExpanded: Bool
-    var canSubmitText: (String) -> Bool
-
-    var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: 14) {
-                Divider()
-
-                AccountLoginHero(hasConfiguration: model.hasConfiguration)
-
-                SettingsInputField(
-                    title: "手机号",
-                    placeholder: "九号账号手机号",
-                    systemImage: "phone.fill",
-                    text: $model.account,
-                    keyboardType: .phonePad,
-                    textContentType: .username
-                )
-
-                LoginModePicker(selection: $loginMode)
-
-                if loginMode == .password {
-                    SettingsInputField(
-                        title: "密码",
-                        placeholder: "九号账号密码",
-                        systemImage: "lock.fill",
-                        text: $model.password,
-                        isSecure: true,
-                        textContentType: .password
-                    )
-
-                    Button {
-                        Task {
-                            await model.loginWithPassword()
-                            collapseIfLoggedIn()
-                        }
-                    } label: {
-                        SettingsButtonLabel(title: primaryLoginTitle, systemImage: "key.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!model.hasConfiguration || !canSubmitText(model.account) || model.password.isEmpty)
-                } else {
-                    SettingsInputField(
-                        title: "验证码",
-                        placeholder: "短信验证码",
-                        systemImage: "number.square.fill",
-                        text: $model.smsCode,
-                        keyboardType: .numberPad,
-                        textContentType: .oneTimeCode
-                    )
-
-                    HStack(spacing: 10) {
-                        Button {
-                            Task { await model.sendSMSCode() }
-                        } label: {
-                            SettingsCompactButtonLabel(title: "发送验证码", systemImage: "message.fill")
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(!model.hasConfiguration || !canSubmitText(model.account))
-
-                        Button {
-                            Task {
-                                await model.consumeSMSCode()
-                                collapseIfLoggedIn()
-                            }
-                        } label: {
-                            SettingsCompactButtonLabel(title: "完成绑定", systemImage: "checkmark.seal.fill")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!model.hasConfiguration || !canSubmitText(model.account) || !canSubmitText(model.smsCode))
-                    }
-                }
-
-                Button {
-                    isExpanded = false
-                    model.password = ""
-                    model.smsCode = ""
-                } label: {
-                    SettingsCompactButtonLabel(title: "收起", systemImage: "chevron.up")
-                }
-                .buttonStyle(.bordered)
-                .font(.subheadline.weight(.semibold))
-            }
-            .padding(.top, 8)
-        } label: {
-            AccountSummaryRow(
-                accountText: model.currentAccountDisplay,
-                loginResult: model.loginResult,
-                hasAccount: model.hasLoginAccount
-            )
-        }
-    }
-
-    private var primaryLoginTitle: String {
-        "绑定账号"
-    }
-
-    private func collapseIfLoggedIn() {
-        if model.errorMessage == nil, model.hasLoginAccount {
-            isExpanded = false
-        }
-    }
-}
-
-private struct AccountLoginHero: View {
-    var hasConfiguration: Bool
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(tint.opacity(0.14))
-                Image(systemName: "cloud.fill")
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(tint)
-            }
-            .frame(width: 42, height: 42)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.teslaPrimaryText)
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(Color.teslaSecondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(12)
-        .background(Color.teslaControlBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-    }
-
-    private var tint: Color {
-        hasConfiguration ? .green : .orange
-    }
-
-    private var title: String {
-        if !hasConfiguration { return "先保存连接地址" }
-        return "九号账号登录"
-    }
-
-    private var detail: String {
-        if !hasConfiguration {
-            return "在“连接与通知”里保存地址和 Token 后再绑定账号。"
-        }
-        return "绑定后会自动刷新车辆数据，并持续补齐行程记录。"
-    }
-}
-
-private struct LoginModePicker: View {
-    @Binding var selection: LoginMode
-
-    var body: some View {
-        HStack(spacing: 8) {
-            ForEach(LoginMode.allCases) { mode in
-                Button {
-                    selection = mode
-                } label: {
-                    Label(mode.title, systemImage: mode.systemImage)
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(selection == mode ? Color.green : Color(.tertiarySystemGroupedBackground))
-                        .foregroundStyle(selection == mode ? Color.white : Color.primary)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
 }
 
 private struct SettingsProfileCard: View {
@@ -1670,34 +1358,6 @@ private struct SettingsCompactButtonLabel: View {
         .lineLimit(1)
         .minimumScaleFactor(0.82)
         .frame(maxWidth: .infinity, alignment: .center)
-    }
-}
-
-private enum LoginMode: String, CaseIterable, Identifiable {
-    case password
-    case sms
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .password: return "密码"
-        case .sms: return "短信"
-        }
-    }
-
-    var fullTitle: String {
-        switch self {
-        case .password: return "密码登录"
-        case .sms: return "验证码登录"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .password: return "key.fill"
-        case .sms: return "message.fill"
-        }
     }
 }
 
