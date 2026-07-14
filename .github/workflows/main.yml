@@ -5,29 +5,30 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    # 关键修改：使用 macOS 14 环境，它内置 Xcode 15.x（对应 iOS 17 SDK）
+    runs-on: macos-14
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select Xcode
-        run: sudo xcode-select -s '/Applications/Xcode.app/Contents/Developer'
+      # 可选：确认 Xcode 版本和 iOS SDK 版本（便于排查）
+      - name: Show Xcode version
+        run: |
+          sudo xcode-select -s '/Applications/Xcode.app/Contents/Developer'
+          xcodebuild -version
+          xcodebuild -showsdks | grep iphoneos
 
-      # 进入项目所在目录（mini-ninebot 文件夹）
       - name: Change to project directory
         run: |
           cd mini-ninebot
           echo "Current directory: $(pwd)"
           ls -la
 
-      # 列出所有 Scheme（关键步骤，请务必查看输出）
       - name: List available schemes
         run: |
           cd mini-ninebot
           xcodebuild -project mini-ninebot.xcodeproj -list
 
-      # 构建归档（无签名）
-      # 注意：Scheme 名称请根据上一步输出修改（这里默认用 mini-ninebot）
       - name: Build archive (unsigned)
         run: |
           cd mini-ninebot
@@ -38,9 +39,10 @@ jobs:
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
+            # 关键修改：强制指定部署目标为 17.0，确保兼容你的系统
+            IPHONEOS_DEPLOYMENT_TARGET=17.0 \
             archive -archivePath ../build/app.xcarchive
 
-      # 导出 IPA（从 archive 中提取 .app 并打包）
       - name: Export IPA
         run: |
           mkdir -p Payload
