@@ -5,24 +5,24 @@ on:
 
 jobs:
   build:
-    # 关键修改：使用 macOS 14 环境，它内置 Xcode 15.x（对应 iOS 17 SDK）
-    runs-on: macos-14
+    # 使用最新的 macOS 环境，因为需要 Xcode 能打开项目格式 77
+    runs-on: macos-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 可选：确认 Xcode 版本和 iOS SDK 版本（便于排查）
-      - name: Show Xcode version
-        run: |
-          sudo xcode-select -s '/Applications/Xcode.app/Contents/Developer'
-          xcodebuild -version
-          xcodebuild -showsdks | grep iphoneos
+      - name: Select Xcode
+        run: sudo xcode-select -s '/Applications/Xcode.app/Contents/Developer'
 
-      - name: Change to project directory
+      # 【核心修改】删除项目中对 _LocationEssentials 框架的所有引用
+      - name: Remove _LocationEssentials framework from project
         run: |
           cd mini-ninebot
-          echo "Current directory: $(pwd)"
-          ls -la
+          # 备份原始项目文件（以防万一）
+          cp mini-ninebot.xcodeproj/project.pbxproj mini-ninebot.xcodeproj/project.pbxproj.bak
+          # 删除所有包含 "_LocationEssentials" 的行（包括框架引用和构建阶段）
+          sed -i '' '/_LocationEssentials/d' mini-ninebot.xcodeproj/project.pbxproj
+          echo "Removed all references to _LocationEssentials"
 
       - name: List available schemes
         run: |
@@ -39,7 +39,6 @@ jobs:
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            # 关键修改：强制指定部署目标为 17.0，确保兼容你的系统
             IPHONEOS_DEPLOYMENT_TARGET=17.0 \
             archive -archivePath ../build/app.xcarchive
 
