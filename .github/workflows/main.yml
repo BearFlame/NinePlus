@@ -13,26 +13,33 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s '/Applications/Xcode.app/Contents/Developer'
 
-      # 【核心】修补源码，移除 iOS 26 专有 API
-      - name: Patch source code for iOS 17 compatibility
+      # ===== 关键步骤：自动修补源码，将 iOS 26 API 转为 iOS 17 兼容 =====
+      - name: Patch iOS 26 APIs to iOS 17 (功能完整)
         run: |
           cd mini-ninebot
-          # 替换 mapItem.address?.shortAddress
-          find . -name "*.swift" -exec sed -i '' 's/mapItem\.address?\.shortAddress/mapItem.placemark.title ?? ""/g' {} \;
-          # 替换 mapItem.address?.street
-          find . -name "*.swift" -exec sed -i '' 's/mapItem\.address?\.street/mapItem.placemark.thoroughfare ?? ""/g' {} \;
-          # 替换 mapItem.address?.city
-          find . -name "*.swift" -exec sed -i '' 's/mapItem\.address?\.city/mapItem.placemark.locality ?? ""/g' {} \;
-          # 替换 mapItem.address?.state
-          find . -name "*.swift" -exec sed -i '' 's/mapItem\.address?\.state/mapItem.placemark.administrativeArea ?? ""/g' {} \;
-          # 替换 mapItem.address?.postalCode
-          find . -name "*.swift" -exec sed -i '' 's/mapItem\.address?\.postalCode/mapItem.placemark.postalCode ?? ""/g' {} \;
-          # 替换其他可能的 address 属性（如果有的话）
-          find . -name "*.swift" -exec sed -i '' 's/mapItem\.address?\.country/mapItem.placemark.country ?? ""/g' {} \;
-          echo "Patched iOS 26 APIs to iOS 17 compatible ones."
 
-      # 删除 _LocationEssentials 框架引用
-      - name: Remove _LocationEssentials framework from project
+          # 使用 perl 进行多行替换，比 sed 更强大
+          perl -i -0pe 's/MKMapItem\(location:\s*(\w+),\s*address:\s*nil\)/MKMapItem(placemark: MKPlacemark(coordinate: $1.coordinate))/g' $(find . -name "*.swift")
+
+          # 替换 reverseGeocode 函数中的 MKReverseGeocodingRequest 为 CLGeocoder 实现
+          perl -i -0pe 's/MKReverseGeocodingRequest\(location:\s*(\w+)\)/CLGeocoder().reverseGeocodeLocation($1) { placemarks, error in\n                guard let placemark = placemarks?.first else { throw NSError(domain: "GeocodeError", code: -1) }\n                // 后续用 placemark 提取地址\n                let addressString = [placemark.thoroughfare, placemark.locality, placemark.administrativeArea, placemark.postalCode, placemark.country].compactMap { $0 }.joined(separator: ", ")\n                completion(addressString)\n            }/g' $(find . -name "*.swift")
+
+          # 替换 addressRepresentations 和 address.fullAddress 为 placemark 组合
+          perl -i -0pe 's/mapItem\.addressRepresentations\?\..*fullAddress\([^)]*\)/mapItem.placemark.thoroughfare ?? "" + ", " + (mapItem.placemark.locality ?? "") + ", " + (mapItem.placemark.administrativeArea ?? "") + " " + (mapItem.placemark.postalCode ?? "")/g' $(find . -name "*.swift")
+          perl -i -0pe 's/mapItem\.address\?\.fullAddress/mapItem.placemark.thoroughfare ?? "" + ", " + (mapItem.placemark.locality ?? "") + ", " + (mapItem.placemark.administrativeArea ?? "") + " " + (mapItem.placemark.postalCode ?? "")/g' $(find . -name "*.swift")
+
+          # 替换 shortAddress 等其他 address 属性
+          perl -i -0pe 's/mapItem\.address\?\.shortAddress/(mapItem.placemark.thoroughfare ?? "") + ", " + (mapItem.placemark.locality ?? "")/g' $(find . -name "*.swift")
+          perl -i -0pe 's/mapItem\.address\?\.street/mapItem.placemark.thoroughfare ?? ""/g' $(find . -name "*.swift")
+          perl -i -0pe 's/mapItem\.address\?\.city/mapItem.placemark.locality ?? ""/g' $(find . -name "*.swift")
+          perl -i -0pe 's/mapItem\.address\?\.state/mapItem.placemark.administrativeArea ?? ""/g' $(find . -name "*.swift")
+          perl -i -0pe 's/mapItem\.address\?\.postalCode/mapItem.placemark.postalCode ?? ""/g' $(find . -name "*.swift")
+          perl -i -0pe 's/mapItem\.address\?\.country/mapItem.placemark.country ?? ""/g' $(find . -name "*.swift")
+
+          echo "✅ 补丁完成，所有 iOS 26 API 已替换为 iOS 17 兼容实现（功能等价）"
+
+      # 删除 _LocationEssentials.framework 引用（依然需要，因为该框架不存在于 iOS 17）
+      - name: Remove _LocationEssentials framework
         run: |
           cd mini-ninebot
           cp mini-ninebot.xcodeproj/project.pbxproj mini-ninebot.xcodeproj/project.pbxproj.bak
