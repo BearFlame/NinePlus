@@ -5,7 +5,6 @@ on:
 
 jobs:
   build:
-    # 使用最新的 macOS 环境，因为需要 Xcode 能打开项目格式 77
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -14,20 +13,30 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s '/Applications/Xcode.app/Contents/Developer'
 
-      # 【核心修改】删除项目中对 _LocationEssentials 框架的所有引用
+      # 【核心】修补源码，移除 iOS 26 专有 API
+      - name: Patch source code for iOS 17 compatibility
+        run: |
+          cd mini-ninebot
+          # 替换 mapItem.address?.shortAddress
+          find . -name "*.swift" -exec sed -i '' 's/mapItem\.address?\.shortAddress/mapItem.placemark.title ?? ""/g' {} \;
+          # 替换 mapItem.address?.street
+          find . -name "*.swift" -exec sed -i '' 's/mapItem\.address?\.street/mapItem.placemark.thoroughfare ?? ""/g' {} \;
+          # 替换 mapItem.address?.city
+          find . -name "*.swift" -exec sed -i '' 's/mapItem\.address?\.city/mapItem.placemark.locality ?? ""/g' {} \;
+          # 替换 mapItem.address?.state
+          find . -name "*.swift" -exec sed -i '' 's/mapItem\.address?\.state/mapItem.placemark.administrativeArea ?? ""/g' {} \;
+          # 替换 mapItem.address?.postalCode
+          find . -name "*.swift" -exec sed -i '' 's/mapItem\.address?\.postalCode/mapItem.placemark.postalCode ?? ""/g' {} \;
+          # 替换其他可能的 address 属性（如果有的话）
+          find . -name "*.swift" -exec sed -i '' 's/mapItem\.address?\.country/mapItem.placemark.country ?? ""/g' {} \;
+          echo "Patched iOS 26 APIs to iOS 17 compatible ones."
+
+      # 删除 _LocationEssentials 框架引用
       - name: Remove _LocationEssentials framework from project
         run: |
           cd mini-ninebot
-          # 备份原始项目文件（以防万一）
           cp mini-ninebot.xcodeproj/project.pbxproj mini-ninebot.xcodeproj/project.pbxproj.bak
-          # 删除所有包含 "_LocationEssentials" 的行（包括框架引用和构建阶段）
           sed -i '' '/_LocationEssentials/d' mini-ninebot.xcodeproj/project.pbxproj
-          echo "Removed all references to _LocationEssentials"
-
-      - name: List available schemes
-        run: |
-          cd mini-ninebot
-          xcodebuild -project mini-ninebot.xcodeproj -list
 
       - name: Build archive (unsigned)
         run: |
