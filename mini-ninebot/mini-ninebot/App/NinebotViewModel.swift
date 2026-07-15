@@ -720,19 +720,25 @@ private enum AppleGeocodingError: LocalizedError {
 
 private struct AppleReverseGeocoder {
     func reverseGeocode(latitude: Double, longitude: Double) async throws -> String {
-        let location = CLLocation(latitude: latitude, longitude: longitude)
-        guard let request = MKReverseGeocodingRequest(location: location) else {
-            throw AppleGeocodingError.invalidResponse
+    let location = CLLocation(latitude: latitude, longitude: longitude)
+    return try await withCheckedThrowingContinuation { continuation in
+        let geocoder = CLGeocoder()
+        geocoder.reverseGeocodeLocation(location) { placemarks, error in
+            if let error = error {
+                continuation.resume(throwing: error)
+                return
+            }
+            guard let placemark = placemarks?.first else {
+                continuation.resume(throwing: NSError(domain: "GeocodeError", code: -1, userInfo: nil))
+                return
+            }
+            let address = [placemark.thoroughfare, placemark.locality, placemark.administrativeArea, placemark.postalCode, placemark.country]
+                .compactMap { $0 }
+                .joined(separator: ", ")
+            continuation.resume(returning: address)
         }
-        request.preferredLocale = Locale(identifier: "zh_CN")
-
-        let mapItems = try await request.mapItems
-        let address = Self.addressText(from: mapItems.first)
-        guard !address.isEmpty else {
-            throw AppleGeocodingError.invalidResponse
-        }
-        return address
     }
+}
 
     private static func addressText(from mapItem: MKMapItem?) -> String {
         guard let mapItem else { return "" }
