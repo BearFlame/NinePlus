@@ -741,16 +741,9 @@ private struct AppleReverseGeocoder {
 }
 
     private static func addressText(from mapItem: MKMapItem?) -> String {
-        guard let mapItem else { return "" }
-        let candidates = [
-            mapItem.addressRepresentations?.fullAddress(includingRegion: true, singleLine: true),
-            mapItem.address?.fullAddress,
-            mapItem.address?.shortAddress,
-            mapItem.name
-        ]
-
-        return candidates
-            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first { !$0.isEmpty } ?? ""
+    guard let placemark = mapItem?.placemark else { return "" }
+    return [placemark.thoroughfare, placemark.locality, placemark.administrativeArea, placemark.postalCode, placemark.country]
+        .compactMap { $0 }
+        .joined(separator: ", ")
     }
 }
